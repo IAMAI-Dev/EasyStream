@@ -21,7 +21,7 @@ EasyStream orchestrates and aggregates the following upstream open-source compon
 In accordance with Sections 6 of GPLv3 and 4 of LGPL-3.0:
 1. Full source code for EasyStream, including all build scripts (`scripts/`, `installer/`, `src/`, `src-tauri/`), is distributed in this repository.
 2. Unmodified upstream source tarballs for the exact pinned tags listed above are available from their official GitHub releases and archived alongside any binary release of EasyStream.
-3. Exact asset filenames and SHA-256 checksums are recorded in `src-tauri/resources/manifest.json` during component staging via `scripts/fetch-upstream.ps1`.
+3. The exact x64 asset filenames and expected SHA-256 checksums are pinned in `src-tauri/resources/manifest.json`. The staging script verifies every download and cache entry against these pins before copying resources.
 
 ---
 
