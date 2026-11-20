@@ -26,7 +26,7 @@ jobs:
         run: |
           rustup update stable --no-self-update
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          pnpm install --frozen-lockfile
+          pnpm install --frozen-lockfile --ignore-scripts
       - name: Build offline installer
         run: pnpm build:windows
       - name: Upload Windows installer
