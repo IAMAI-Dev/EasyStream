@@ -26,6 +26,7 @@ const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 const ROOM_SECRET_CRED_KEY: &str = "room_secret";
 
 pub struct EasyTierManager {
+    lifecycle: Mutex<()>,
     process_mgr: Arc<ProcessManager>,
     snapshot: Arc<RwLock<RoomSnapshot>>,
     peers: Arc<RwLock<Vec<PeerInfo>>>,
@@ -43,6 +44,7 @@ impl EasyTierManager {
             initial.has_saved_secret = true;
         }
         Self {
+            lifecycle: Mutex::new(()),
             process_mgr,
             snapshot: Arc::new(RwLock::new(initial)),
             peers: Arc::new(RwLock::new(Vec::new())),
@@ -88,6 +90,20 @@ impl EasyTierManager {
         req: JoinNetworkRequest,
         rpc_port: u16,
     ) -> Result<RoomSnapshot, CommandError> {
+        let _guard = self.lifecycle.lock().await;
+        let result = self.join_locked(req, rpc_port).await;
+        if let Err(err) = &result {
+            if self.get_room_snapshot().await.stage == RoomStage::Joining {
+                self.clear_room().await;
+                let mut snap = self.snapshot.write().await;
+                snap.stage = RoomStage::Error;
+                snap.last_error = Some(err.clone());
+            }
+        }
+        result
+    }
+
+    async fn join_locked(&self, req: JoinNetworkRequest, rpc_port: u16) -> Result<RoomSnapshot, CommandError> {
         let room_name = req.room_name.trim().to_string();
         let room_secret = req.room_secret.trim().to_string();
         if room_name.is_empty() || room_secret.len() < 6 {
@@ -109,7 +125,7 @@ impl EasyTierManager {
         }
 
         // Clean up any previous session first
-        let _ = self.leave_network().await;
+        self.clear_room().await;
 
         let (core_path, cli_path) = self.resolve_binaries();
         let core_bin = core_path.ok_or_else(|| {
@@ -212,37 +228,30 @@ impl EasyTierManager {
 
         *self.core_pid.lock().await = Some(pid);
 
-        // Wait briefly for RPC portal readiness (up to 4s)
-        let mut ready = false;
-        for _ in 0..8 {
-            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-            if let Some(exit_code) = self.process_mgr.try_wait_owned(pid) {
-                let _ = self.cleanup_runtime_file().await;
-                *self.core_pid.lock().await = None;
-                let err = CommandError::new(
-                    ErrorCode::NetworkJoinFailed,
-                    format!("EasyTier 进程启动后立即退出（退出码 {exit_code}），请检查 TUN 驱动权限或房间配置。"),
-                );
-                let mut snap = self.snapshot.write().await;
-                snap.stage = RoomStage::Error;
-                snap.last_error = Some(err.clone());
-                return Err(err);
+        // Wait for the local row and DHCP address, including on slow first-time TUN setup.
+        let mut reason = "等待 EasyTier 分配虚拟 IPv4".to_string();
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(15);
+        while tokio::time::Instant::now() < deadline {
+            tokio::time::sleep(std::time::Duration::from_millis(350)).await;
+            match tokio::time::timeout_at(deadline, self.poll_locked()).await {
+                Ok(Ok(_)) => return Ok(self.get_room_snapshot().await),
+                Ok(Err(e)) => reason = e,
+                Err(_) => break,
             }
-            if self.poll_once().await.is_ok() {
-                ready = true;
+            if self.core_pid.lock().await.is_none() {
                 break;
             }
         }
-
-        let mut snap = self.snapshot.write().await;
-        snap.stage = RoomStage::InRoom;
-        if !ready {
-            tracing::info!("EasyTier core started; waiting for peer/DHCP convergence");
-        }
-        Ok(snap.clone())
+        Err(CommandError::new(ErrorCode::NetworkJoinFailed, reason))
     }
 
     pub async fn leave_network(&self) -> Result<(), CommandError> {
+        let _guard = self.lifecycle.lock().await;
+        self.clear_room().await;
+        Ok(())
+    }
+
+    async fn clear_room(&self) {
         if let Some(pid) = self.core_pid.lock().await.take() {
             let _ = self.process_mgr.stop_owned(pid);
         }
@@ -257,7 +266,6 @@ impl EasyTierManager {
         snap.local_virtual_ip = None;
         snap.nat_type = "Unknown".to_string();
         snap.last_error = None;
-        Ok(())
     }
 
     async fn cleanup_runtime_file(&self) {
@@ -273,26 +281,31 @@ impl EasyTierManager {
     /// Poll `easytier-cli -p 127.0.0.1:<port> -o json peer` and `route`.
     /// Returns true if the local virtual IP changed since last poll.
     pub async fn poll_once(&self) -> Result<bool, String> {
-        let (rpc_port, stage) = {
-            let snap = self.snapshot.read().await;
-            (snap.rpc_port, snap.stage.clone())
-        };
-        if matches!(stage, RoomStage::Disconnected) {
-            return Ok(false);
+        let _guard = self.lifecycle.lock().await;
+        let stage = self.get_room_snapshot().await.stage;
+        if !matches!(stage, RoomStage::InRoom | RoomStage::Reconnecting) {
+            return Err("当前没有活动房间".into());
         }
+        let result = self.poll_locked().await;
+        if let Err(reason) = &result {
+            let running = self.core_pid.lock().await.is_some();
+            self.peers.write().await.clear();
+            self.routes.write().await.clear();
+            let mut snap = self.snapshot.write().await;
+            snap.stage = if running { RoomStage::Reconnecting } else { RoomStage::Error };
+            snap.local_virtual_ip = None;
+            snap.last_error = Some(CommandError::new(ErrorCode::NetworkJoinFailed, reason.clone()));
+        }
+        result
+    }
 
-        // Verify process is still alive
-        if let Some(pid) = *self.core_pid.lock().await {
-            if let Some(code) = self.process_mgr.try_wait_owned(pid) {
-                *self.core_pid.lock().await = None;
-                let mut snap = self.snapshot.write().await;
-                snap.stage = RoomStage::Error;
-                snap.last_error = Some(CommandError::new(
-                    ErrorCode::NetworkJoinFailed,
-                    format!("EasyTier 核心进程意外退出 (code={code})"),
-                ));
-                return Err(format!("easytier-core exited with code {code}"));
-            }
+    async fn poll_locked(&self) -> Result<bool, String> {
+        let rpc_port = self.snapshot.read().await.rpc_port;
+        let pid = (*self.core_pid.lock().await).ok_or("EasyTier 核心进程未启动")?;
+        if let Some(code) = self.process_mgr.try_wait_owned(pid) {
+            *self.core_pid.lock().await = None;
+            self.cleanup_runtime_file().await;
+            return Err(format!("EasyTier 核心进程已退出（退出码 {code}）"));
         }
 
         let (_, cli_opt) = self.resolve_binaries();
@@ -329,8 +342,10 @@ impl EasyTierManager {
 
         for row in parsed_peers {
             if row.cost.eq_ignore_ascii_case("Local") {
-                if !row.ipv4.is_empty() {
-                    local_ip = Some(row.ipv4.clone());
+                if let Ok(ip) = strip_cidr(&row.ipv4).parse::<Ipv4Addr>() {
+                    if !ip.is_unspecified() {
+                        local_ip = Some(ip.to_string());
+                    }
                 }
                 if !row.nat_type.is_empty() {
                     local_nat = row.nat_type.clone();
@@ -405,6 +420,9 @@ impl EasyTierManager {
             });
         }
 
+        if local_ip.is_none() {
+            return Err("EasyTier RPC 已响应，正在等待本机虚拟 IPv4。".into());
+        }
         let mut virtual_ip_changed = false;
         {
             let mut last_ip = self.last_virtual_ip.lock().await;
@@ -420,9 +438,8 @@ impl EasyTierManager {
                 snap.local_virtual_ip = Some(ip);
             }
             snap.nat_type = local_nat;
-            if snap.stage == RoomStage::Joining {
-                snap.stage = RoomStage::InRoom;
-            }
+            snap.stage = RoomStage::InRoom;
+            snap.last_error = None;
         }
 
         *self.peers.write().await = remote_peers;
@@ -486,29 +503,17 @@ async fn run_cli_json(
     rpc_addr: &str,
     subcommand: &str,
 ) -> Result<serde_json::Value, String> {
-    let cli = cli_bin.clone();
-    let rpc = rpc_addr.to_string();
-    let sub = subcommand.to_string();
-
-    tokio::task::spawn_blocking(move || {
-        let mut cmd = Command::new(&cli);
-        cmd.args(["-p", &rpc, "-o", "json", &sub]);
-        #[cfg(windows)]
-        cmd.creation_flags(CREATE_NO_WINDOW);
-
-        let output = cmd
-            .output()
-            .map_err(|e| format!("Failed to run easytier-cli {sub}: {e}"))?;
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(format!("easytier-cli {sub} failed: {stderr}"));
-        }
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        serde_json::from_str::<serde_json::Value>(&stdout)
-            .map_err(|e| format!("Invalid JSON from easytier-cli {sub}: {e}"))
-    })
-    .await
-    .map_err(|e| format!("Task join error: {e}"))?
+    let mut cmd = tokio::process::Command::new(cli_bin);
+    cmd.args(["-p", rpc_addr, "-o", "json", subcommand]).kill_on_drop(true);
+    #[cfg(windows)]
+    cmd.creation_flags(CREATE_NO_WINDOW);
+    let output = tokio::time::timeout(std::time::Duration::from_secs(3), cmd.output())
+        .await.map_err(|_| format!("easytier-cli {subcommand} 请求超时"))?
+        .map_err(|e| format!("easytier-cli {subcommand}: {e}"))?;
+    if !output.status.success() {
+        return Err(format!("easytier-cli {subcommand}: {}", String::from_utf8_lossy(&output.stderr).trim()));
+    }
+    serde_json::from_slice(&output.stdout).map_err(|e| format!("Invalid JSON from easytier-cli {subcommand}: {e}"))
 }
 
 #[derive(Debug, Default)]

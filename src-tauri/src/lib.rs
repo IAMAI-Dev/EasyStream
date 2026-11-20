@@ -158,7 +158,7 @@ fn start_background_monitor(app: AppHandle, state: Arc<AppState>) {
 
             // 2. Poll EasyTier peers & routes every 2s when in room
             let room_snap = state.easytier.get_room_snapshot().await;
-            if room_snap.stage != RoomStage::Disconnected {
+            if matches!(room_snap.stage, RoomStage::InRoom | RoomStage::Reconnecting) {
                 if let Ok(_ip_changed) = state.easytier.poll_once().await {
                     let peers = state.easytier.get_peers().await;
                     let (base_port, trusted_map) = {
@@ -217,19 +217,19 @@ fn start_background_monitor(app: AppHandle, state: Arc<AppState>) {
                         }
                     }
 
-                    let updated_peers = state.easytier.get_peers().await;
-                    let updated_room = state.easytier.get_room_snapshot().await;
-                    let seq = state.easytier.next_seq().await;
-                    let _ = app.emit("room-updated", &updated_room);
-                    let _ = app.emit(
-                        "network-peers-updated",
-                        &PeersUpdatedEvent {
-                            room_id: updated_room.room_id.unwrap_or_default(),
-                            snapshot_seq: seq,
-                            peers: updated_peers,
-                        },
-                    );
                 }
+                let updated_peers = state.easytier.get_peers().await;
+                let updated_room = state.easytier.get_room_snapshot().await;
+                let seq = state.easytier.next_seq().await;
+                let _ = app.emit("room-updated", &updated_room);
+                let _ = app.emit(
+                    "network-peers-updated",
+                    &PeersUpdatedEvent {
+                        room_id: updated_room.room_id.unwrap_or_default(),
+                        snapshot_seq: seq,
+                        peers: updated_peers,
+                    },
+                );
             }
 
             // 3. Refresh local Sunshine host status & pending pairings

@@ -75,7 +75,13 @@ pub async fn join_network(
         .append_log(format!("正在加入 EasyTier 房间: {}", request.room_name))
         .await;
 
-    let snap = state.easytier.join_network(request.clone(), rpc_port).await?;
+    let snap = match state.easytier.join_network(request.clone(), rpc_port).await {
+        Ok(room) => room,
+        Err(err) => {
+            let _ = app.emit("room-updated", state.easytier.get_room_snapshot().await);
+            return Err(err);
+        }
+    };
 
     {
         let mut settings = state.settings.write().await;
