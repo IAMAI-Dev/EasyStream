@@ -1,0 +1,65 @@
+[package]
+name = "easystream"
+version = "0.1.0"
+description = "EasyStream - Unified remote desktop & game streaming shell integrating EasyTier, Sunshine, and Moonlight Qt"
+authors = ["EasyStream Contributors"]
+license = "GPL-3.0-or-later"
+edition = "2021"
+rust-version = "1.77"
+
+[lib]
+name = "easystream_lib"
+crate-type = ["rlib"]
+
+[[bin]]
+name = "easystream"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon", "image-png"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+rustls-pemfile = "2"
+sha2 = "0.10"
+hex = "0.4"
+rand = "0.8"
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+thiserror = "2"
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+toml = "0.8"
+dirs = "5"
+base64 = "0.22"
+regex = "1"
+hostname = "0.4"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_System_JobObjects",
+    "Win32_System_Threading",
+    "Win32_Security",
+    "Win32_Security_Credentials",
+    "Win32_Security_Authorization",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Services",
+    "Win32_Devices_Display",
+    "Win32_Graphics_Gdi",
+    "Win32_System_Pipes",
+    "Win32_System_IO",
+] }
+
+[profile.release]
+panic = "abort"
+codegen-units = 1
+lto = true
+opt-level = "s"
+strip = true

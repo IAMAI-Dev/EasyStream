@@ -1,0 +1,40 @@
+{
+  "schema_version": 1,
+  "baseline_date": "2026-11-19",
+  "easystream_license": "GPL-3.0-or-later",
+  "components": {
+    "easytier": {
+      "name": "EasyTier",
+      "tag": "v2.6.4",
+      "arch": "x86_64-pc-windows-msvc",
+      "asset_filename": "easytier-windows-x86_64-v2.6.4.zip",
+      "binaries": ["easytier-core.exe", "easytier-cli.exe"],
+      "sha256": "PENDING_FETCH_VERIFICATION",
+      "license": "LGPL-3.0",
+      "release_url": "https://github.com/EasyTier/EasyTier/releases/tag/v2.6.4",
+      "verified_scenarios": []
+    },
+    "sunshine": {
+      "name": "Sunshine",
+      "tag": "v2026.914.233613",
+      "arch": "x86_64-windows",
+      "asset_filename": "sunshine-windows-installer.msi",
+      "fallback_asset_pattern": "*windows*x64*.msi",
+      "sha256": "PENDING_FETCH_VERIFICATION",
+      "license": "GPL-3.0",
+      "release_url": "https://github.com/SunshineStream/Sunshine/releases/tag/v2026.914.233613",
+      "verified_scenarios": []
+    },
+    "moonlight": {
+      "name": "Moonlight Qt",
+      "tag": "v6.2.0",
+      "arch": "x86_64-windows",
+      "asset_filename": "MoonlightPortable-x64-6.2.0.zip",
+      "binaries": ["Moonlight.exe"],
+      "sha256": "PENDING_FETCH_VERIFICATION",
+      "license": "GPL-3.0",
+      "release_url": "https://github.com/moonlight-stream/moonlight-qt/releases/tag/v6.2.0",
+      "verified_scenarios": []
+    }
+  }
+}

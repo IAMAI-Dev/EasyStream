@@ -1,0 +1,38 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Frontend build output
+dist/
+dist-ssr/
+*.local
+
+# Rust / Tauri build artifacts
+src-tauri/target/
+src-tauri/gen/
+
+# Downloaded upstream binaries & installers (populated via scripts/fetch-upstream.ps1)
+src-tauri/binaries/*.exe
+!src-tauri/binaries/README.md
+src-tauri/resources/moonlight/*
+!src-tauri/resources/moonlight/.gitkeep
+src-tauri/resources/sunshine/*
+!src-tauri/resources/sunshine/.gitkeep
+src-tauri/resources/easytier/*
+!src-tauri/resources/easytier/.gitkeep
+
+# Runtime & temp secrets (never commit)
+*.toml.tmp
+*.key
+*.pem
+*.pfx
+diagnostics-*.zip
+diagnostics-*.json
+
+# Editor & OS
+.vscode/*
+!.vscode/extensions.json
+.idea/
+.DS_Store
+Thumbs.db
+*.log
