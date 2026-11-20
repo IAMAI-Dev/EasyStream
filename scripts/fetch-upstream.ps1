@@ -16,92 +16,76 @@ $ErrorActionPreference = "Stop"
 
 $RepoRoot = Split-Path -Parent $PSScriptRoot
 $ResourcesRoot = Join-Path $RepoRoot "src-tauri\resources"
-$BinariesRoot = Join-Path $RepoRoot "src-tauri\binaries"
 $ManifestPath = Join-Path $ResourcesRoot "manifest.json"
 $TempDir = Join-Path $env:TEMP "easystream-upstream-fetch"
-
 New-Item -ItemType Directory -Force -Path $TempDir | Out-Null
-New-Item -ItemType Directory -Force -Path (Join-Path $ResourcesRoot "easytier") | Out-Null
-New-Item -ItemType Directory -Force -Path (Join-Path $ResourcesRoot "sunshine") | Out-Null
-New-Item -ItemType Directory -Force -Path (Join-Path $ResourcesRoot "moonlight") | Out-Null
-New-Item -ItemType Directory -Force -Path $BinariesRoot | Out-Null
+$manifest = Get-Content -Raw -LiteralPath $ManifestPath | ConvertFrom-Json
 
-$manifest = Get-Content -Raw -Path $ManifestPath | ConvertFrom-Json
-
-function Get-GitHubReleaseAsset {
-    param(
-        [string]$Repo,
-        [string]$Tag,
-        [string]$Pattern
-    )
-    $apiUrl = "https://api.github.com/repos/$Repo/releases/tags/$Tag"
-    Write-Host "Querying $apiUrl ..." -ForegroundColor Cyan
-    $headers = @{ "User-Agent" = "EasyStream-Fetch-Script" }
-    $release = Invoke-RestMethod -Uri $apiUrl -Headers $headers
-    $asset = $release.assets | Where-Object { $_.name -like $Pattern } | Select-Object -First 1
-    if (-not $asset) {
-        throw "Could not find asset matching '$Pattern' in $Repo@$Tag"
+function Get-VerifiedAsset {
+    param([string]$Repo, $Component)
+    $name = $Component.asset_filename
+    $expected = $Component.sha256
+    if ($expected -notmatch '^[a-f0-9]{64}$' -or [IO.Path]::GetFileName($name) -cne $name) {
+        throw "Invalid release pin for $Repo"
     }
-    return $asset
-}
-
-function Download-And-Hash {
-    param(
-        [string]$Url,
-        [string]$OutFile
-    )
-    if ((Test-Path $OutFile) -and (-not $Force)) {
-        Write-Host "Using cached $OutFile" -ForegroundColor DarkGray
-    } else {
-        Write-Host "Downloading $Url -> $OutFile" -ForegroundColor Green
-        Invoke-WebRequest -Uri $Url -OutFile $OutFile -UseBasicParsing
+    $path = Join-Path $TempDir $name
+    if ($Force -or -not (Test-Path -LiteralPath $path -PathType Leaf)) {
+        $url = "https://github.com/$Repo/releases/download/$($Component.tag)/$name"
+        $partial = Join-Path $TempDir ([guid]::NewGuid().ToString() + '.part')
+        try {
+            Invoke-WebRequest -Uri $url -OutFile $partial -UseBasicParsing
+            if ((Get-FileHash -LiteralPath $partial -Algorithm SHA256).Hash -ne $expected) {
+                throw "SHA-256 mismatch for downloaded $name"
+            }
+            Move-Item -LiteralPath $partial -Destination $path -Force
+        } finally {
+            if (Test-Path -LiteralPath $partial) { Remove-Item -LiteralPath $partial -Force }
+        }
     }
-    return (Get-FileHash -Path $OutFile -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ((Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash -ne $expected) {
+        throw "SHA-256 mismatch for cached $name. Run again with -Force to download a fresh copy."
+    }
+    return $path
 }
 
-# 1. EasyTier v2.6.4
-$etAsset = Get-GitHubReleaseAsset -Repo "EasyTier/EasyTier" -Tag $manifest.components.easytier.tag -Pattern "*windows-x86_64*.zip"
-$etZip = Join-Path $TempDir $etAsset.name
-$etHash = Download-And-Hash -Url $etAsset.browser_download_url -OutFile $etZip
-$etExtract = Join-Path $TempDir "easytier-extract"
-if (Test-Path $etExtract) { Remove-Item -Recurse -Force $etExtract }
-Expand-Archive -Path $etZip -DestinationPath $etExtract -Force
-
-$etCore = Get-ChildItem -Path $etExtract -Recurse -Filter "easytier-core.exe" | Select-Object -First 1
-$etCli = Get-ChildItem -Path $etExtract -Recurse -Filter "easytier-cli.exe" | Select-Object -First 1
-$wintun = Get-ChildItem -Path $etExtract -Recurse -Filter "wintun.dll" | Select-Object -First 1
-if (-not $etCore -or -not $etCli) {
-    throw "easytier-core.exe or easytier-cli.exe missing from archive."
+# Verify all three inputs before modifying bundled resources.
+$etZip = Get-VerifiedAsset 'EasyTier/EasyTier' $manifest.components.easytier
+$ssMsi = Get-VerifiedAsset 'SunshineStream/Sunshine' $manifest.components.sunshine
+$mlZip = Get-VerifiedAsset 'moonlight-stream/moonlight-qt' $manifest.components.moonlight
+$extract = New-Item -ItemType Directory -Path (Join-Path $TempDir ([guid]::NewGuid().ToString()))
+try {
+    $etExtract = Join-Path $extract.FullName 'easytier'
+    $mlExtract = Join-Path $extract.FullName 'moonlight'
+    Expand-Archive -LiteralPath $etZip -DestinationPath $etExtract
+    Expand-Archive -LiteralPath $mlZip -DestinationPath $mlExtract
+    $mlExe = @(Get-ChildItem -LiteralPath $mlExtract -Recurse -Filter Moonlight.exe -File)
+    if ($mlExe.Count -ne 1) { throw "Expected one Moonlight.exe in portable archive" }
+    $etCore = Get-ChildItem -Path $etExtract -Recurse -Filter "easytier-core.exe" | Select-Object -First 1
+    $etCli = Get-ChildItem -Path $etExtract -Recurse -Filter "easytier-cli.exe" | Select-Object -First 1
+    $wintun = Get-ChildItem -Path $etExtract -Recurse -Filter "wintun.dll" | Select-Object -First 1
+    if (-not $etCore -or -not $etCli) {
+        throw "easytier-core.exe or easytier-cli.exe missing from archive."
+    }
+    Copy-Item -Force $etCore.FullName (Join-Path $ResourcesRoot "easytier\easytier-core.exe")
+    Copy-Item -Force $etCli.FullName (Join-Path $ResourcesRoot "easytier\easytier-cli.exe")
+    if ($wintun) {
+        Copy-Item -Force $wintun.FullName (Join-Path $ResourcesRoot "easytier\wintun.dll")
+    }
+    Copy-Item -LiteralPath $ssMsi -Destination (Join-Path $ResourcesRoot 'sunshine\sunshine-windows-installer.msi') -Force
+    $mlTarget = (Get-Item -LiteralPath (Join-Path $ResourcesRoot 'moonlight')).FullName
+    foreach ($item in (Get-ChildItem -LiteralPath $mlTarget -Force)) {
+        if ($item.Name -eq '.gitkeep') { continue }
+        if ([IO.Path]::GetDirectoryName($item.FullName) -ne $mlTarget) {
+            throw "Unexpected Moonlight resource path"
+        }
+        if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw "Unexpected resource link" }
+        Remove-Item -LiteralPath $item.FullName -Recurse -Force
+    }
+    Get-ChildItem -LiteralPath $mlExe[0].DirectoryName -Force |
+        ForEach-Object { Copy-Item -LiteralPath $_.FullName -Destination $mlTarget -Recurse -Force }
+} finally {
+    if ($extract.Parent.FullName -eq [IO.Path]::GetFullPath($TempDir)) {
+        Remove-Item -LiteralPath $extract.FullName -Recurse -Force
+    }
 }
-Copy-Item -Force $etCore.FullName (Join-Path $ResourcesRoot "easytier\easytier-core.exe")
-Copy-Item -Force $etCli.FullName (Join-Path $ResourcesRoot "easytier\easytier-cli.exe")
-if ($wintun) {
-    Copy-Item -Force $wintun.FullName (Join-Path $ResourcesRoot "easytier\wintun.dll")
-}
-$manifest.components.easytier.asset_filename = $etAsset.name
-$manifest.components.easytier.sha256 = $etHash
-
-# 2. Sunshine v2026.914.233613 (Windows x64 MSI)
-$ssAsset = Get-GitHubReleaseAsset -Repo "SunshineStream/Sunshine" -Tag $manifest.components.sunshine.tag -Pattern "*windows*.msi"
-$ssMsi = Join-Path $ResourcesRoot "sunshine\sunshine-windows-installer.msi"
-$ssHash = Download-And-Hash -Url $ssAsset.browser_download_url -OutFile $ssMsi
-$manifest.components.sunshine.asset_filename = $ssAsset.name
-$manifest.components.sunshine.sha256 = $ssHash
-
-# 3. Moonlight Qt v6.2.0 (Windows x64 Portable)
-$mlAsset = Get-GitHubReleaseAsset -Repo "moonlight-stream/moonlight-qt" -Tag $manifest.components.moonlight.tag -Pattern "MoonlightPortable-x64-*.zip"
-$mlZip = Join-Path $TempDir $mlAsset.name
-$mlHash = Download-And-Hash -Url $mlAsset.browser_download_url -OutFile $mlZip
-$mlTarget = Join-Path $ResourcesRoot "moonlight"
-Get-ChildItem -Path $mlTarget -Exclude ".gitkeep" | Remove-Item -Recurse -Force
-Expand-Archive -Path $mlZip -DestinationPath $mlTarget -Force
-$manifest.components.moonlight.asset_filename = $mlAsset.name
-$manifest.components.moonlight.sha256 = $mlHash
-
-# Save updated manifest with verified SHA-256 hashes
-$manifest | ConvertTo-Json -Depth 6 | Set-Content -Path $ManifestPath -Encoding UTF8
-
-Write-Host "`nAll upstream components staged and SHA-256 recorded in manifest.json:" -ForegroundColor Green
-Write-Host "  EasyTier  : $($manifest.components.easytier.asset_filename) [$etHash]"
-Write-Host "  Sunshine  : $($manifest.components.sunshine.asset_filename) [$ssHash]"
-Write-Host "  Moonlight : $($manifest.components.moonlight.asset_filename) [$mlHash]"
+Write-Host 'All pinned x64 assets verified and staged.'

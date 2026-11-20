@@ -9,7 +9,7 @@
       "arch": "x86_64-pc-windows-msvc",
       "asset_filename": "easytier-windows-x86_64-v2.6.4.zip",
       "binaries": ["easytier-core.exe", "easytier-cli.exe"],
-      "sha256": "PENDING_FETCH_VERIFICATION",
+      "sha256": "27af91e270e554709b048bd32327fefd2dfce5062ae1e8701af7550c6f525f84",
       "license": "LGPL-3.0",
       "release_url": "https://github.com/EasyTier/EasyTier/releases/tag/v2.6.4",
       "verified_scenarios": []
@@ -18,9 +18,8 @@
       "name": "Sunshine",
       "tag": "v2026.914.233613",
       "arch": "x86_64-windows",
-      "asset_filename": "sunshine-windows-installer.msi",
-      "fallback_asset_pattern": "*windows*x64*.msi",
-      "sha256": "PENDING_FETCH_VERIFICATION",
+      "asset_filename": "Sunshine-Windows-AMD64-installer.msi",
+      "sha256": "1d7fed8beecd5889dc7ff14cf9f42d6d38f37c3066c13c6c2a5f4e91847e0ccf",
       "license": "GPL-3.0",
       "release_url": "https://github.com/SunshineStream/Sunshine/releases/tag/v2026.914.233613",
       "verified_scenarios": []
@@ -31,7 +30,7 @@
       "arch": "x86_64-windows",
       "asset_filename": "MoonlightPortable-x64-6.2.0.zip",
       "binaries": ["Moonlight.exe"],
-      "sha256": "PENDING_FETCH_VERIFICATION",
+      "sha256": "6f91d268b41ed5ca8066d9d7578dc403b8db190991ff48f00b1700465f8f7ebf",
       "license": "GPL-3.0",
       "release_url": "https://github.com/moonlight-stream/moonlight-qt/releases/tag/v6.2.0",
       "verified_scenarios": []
