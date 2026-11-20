@@ -165,29 +165,60 @@ pub fn delete_secret(_key: &str) -> Result<(), String> {
 pub fn write_restricted_runtime_file(dir: &Path, filename: &str, content: &str) -> Result<PathBuf, String> {
     std::fs::create_dir_all(dir).map_err(|e| format!("Failed to create runtime dir: {e}"))?;
     let path = dir.join(filename);
-    std::fs::write(&path, content).map_err(|e| format!("Failed to write runtime config: {e}"))?;
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
 
-    #[cfg(windows)]
+    #[cfg(unix)]
     {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        let user = std::env::var("USERNAME").unwrap_or_default();
-        if !user.is_empty() {
-            // Remove inherited ACLs and grant full control exclusively to current user & SYSTEM.
-            let _ = std::process::Command::new("icacls")
-                .args([
-                    path.to_string_lossy().as_ref(),
-                    "/inheritance:r",
-                    "/grant:r",
-                    &format!("{user}:(R,W)"),
-                    "SYSTEM:(F)",
-                ])
-                .creation_flags(CREATE_NO_WINDOW)
-                .output();
-        }
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
     }
 
+    // No room data is written until the file has its private ACL.
+    drop(options.open(&path).map_err(|e| format!("无法创建房间配置: {e}"))?);
+    #[cfg(windows)]
+    if let Err(err) = restrict_runtime_file_acl(&path) {
+        let _ = std::fs::remove_file(&path);
+        return Err(err);
+    }
+    if let Err(err) = std::fs::write(&path, content) {
+        secure_delete_file(&path);
+        return Err(format!("无法写入房间配置: {err}"));
+    }
     Ok(path)
+}
+
+#[cfg(windows)]
+fn restrict_runtime_file_acl(path: &Path) -> Result<(), String> {
+    use std::os::windows::process::CommandExt;
+    use std::process::Command;
+
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    let system = std::env::var_os("SystemRoot").ok_or("无法定位 Windows 系统目录")?;
+    let system32 = PathBuf::from(system).join("System32");
+    let identity = Command::new(system32.join("whoami.exe"))
+        .args(["/user", "/fo", "csv", "/nh"])
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()
+        .map_err(|e| format!("无法读取当前账户 SID: {e}"))?;
+    let sid = String::from_utf8_lossy(&identity.stdout);
+    let sid = sid.split('"').find(|field| {
+        field.strip_prefix("S-1-").is_some_and(|suffix| {
+            !suffix.is_empty() && suffix.bytes().all(|b| b.is_ascii_digit() || b == b'-')
+        })
+    });
+    let sid = sid.filter(|_| identity.status.success()).ok_or("无法识别当前账户 SID")?;
+    let rights = format!("*{sid}:M");
+    let acl = Command::new(system32.join("icacls.exe"))
+        .arg(path)
+        .args(["/inheritance:r", "/grant:r", &rights, "*S-1-5-18:F"])
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()
+        .map_err(|e| format!("无法设置房间配置的权限: {e}"))?;
+    if !acl.status.success() {
+        return Err(format!("无法限制房间配置的访问权限（icacls 退出码 {:?}）", acl.status.code()));
+    }
+    Ok(())
 }
 
 /// Securely overwrite and delete a temporary runtime configuration file.
@@ -244,6 +275,19 @@ pub fn redact_secrets(input: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn restricted_room_config_is_readable_by_the_current_user() {
+        let dir = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
+        let content = "dhcp = true\n";
+        let path = write_restricted_runtime_file(&dir, "room.toml", content).unwrap();
+        let saved = std::fs::read_to_string(&path);
+        secure_delete_file(&path);
+        assert!(!path.exists());
+        std::fs::remove_dir(&dir).unwrap();
+        assert_eq!(saved.unwrap(), content);
+    }
 
     #[test]
     fn redacts_pin_secret_and_auth() {

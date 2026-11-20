@@ -205,7 +205,8 @@ impl EasyTierManager {
             &relay_nodes,
         );
         let runtime_dir = app_data_dir().join("runtime");
-        let cfg_path = write_restricted_runtime_file(&runtime_dir, "easytier-room.toml", &toml_content)
+        let cfg_name = format!("easytier-room-{}.toml", uuid::Uuid::new_v4());
+        let cfg_path = write_restricted_runtime_file(&runtime_dir, &cfg_name, &toml_content)
             .map_err(|e| CommandError::new(ErrorCode::NetworkJoinFailed, e))?;
 
         *self.runtime_config_path.lock().await = Some(cfg_path.clone());

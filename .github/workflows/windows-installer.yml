@@ -29,6 +29,14 @@ jobs:
           pnpm install --frozen-lockfile --ignore-scripts
       - name: Build offline installer
         run: pnpm build:windows
+      - name: Verify Windows room configuration permissions
+        run: cargo test --manifest-path src-tauri/Cargo.toml --release --locked --lib restricted_room_config_is_readable_by_the_current_user
+      - name: Upload app executable for an existing installation
+        uses: actions/upload-artifact@v4
+        with:
+          name: EasyStream-Windows-x64-app
+          path: src-tauri/target/release/easystream.exe
+          if-no-files-found: error
       - name: Upload Windows installer
         uses: actions/upload-artifact@v4
         with:
