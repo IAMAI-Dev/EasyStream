@@ -13,6 +13,15 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+$ProgressPreference = "SilentlyContinue"
+
+if ($PSVersionTable.PSEdition -eq 'Desktop') {
+    # When called by Tauri from pwsh, an inherited PSModulePath can resolve
+    # PowerShell 7 modules before the Windows PowerShell versions.
+    foreach ($module in 'Microsoft.PowerShell.Utility', 'Microsoft.PowerShell.Archive') {
+        Import-Module -Name (Join-Path $PSHOME "Modules\$module\$module.psd1")
+    }
+}
 
 $RepoRoot = Split-Path -Parent $PSScriptRoot
 $ResourcesRoot = Join-Path $RepoRoot "src-tauri\resources"
