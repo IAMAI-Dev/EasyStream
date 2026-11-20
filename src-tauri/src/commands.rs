@@ -140,8 +140,18 @@ pub async fn toggle_host_service(
         })
         .await;
 
-    // EasyTier Windows TUN interface is typically named "EasyTier" or "easytier"
-    let status = state.sunshine.toggle_host_service(enable, "").await?;
+    let alias = if enable {
+        let room = state.easytier.get_room_snapshot().await;
+        let ip = room.local_virtual_ip.as_deref()
+            .and_then(|ip| ip.split('/').next())
+            .and_then(|ip| ip.parse().ok())
+            .ok_or_else(|| CommandError::new(ErrorCode::NoReachablePath, "请先加入房间并等待 EasyTier 分配虚拟 IPv4。"))?;
+        crate::core::helper_ipc::room_interface_alias(ip)
+            .map_err(|e| CommandError::new(ErrorCode::NoReachablePath, e))?
+    } else {
+        String::new()
+    };
+    let status = state.sunshine.toggle_host_service(enable, &alias).await?;
     let _ = app.emit("host-status-updated", &status);
     Ok(status)
 }

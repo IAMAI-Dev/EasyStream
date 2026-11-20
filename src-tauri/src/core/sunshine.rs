@@ -351,7 +351,7 @@ impl SunshineManager {
                     self.status.write().await.firewall_scoped = true;
                 }
                 Ok(resp) => {
-                    tracing::warn!("Firewall scoping warning: {}", resp.message);
+                    return Err(CommandError::new(ErrorCode::PermissionRequired, resp.message));
                 }
                 Err(e) => {
                     return Err(CommandError::new(ErrorCode::PermissionRequired, e));

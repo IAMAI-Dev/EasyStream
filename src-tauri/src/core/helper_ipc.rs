@@ -199,11 +199,44 @@ fn execute_allowlisted_direct(
     }
 }
 
+/// Resolve the adapter owning this room's assigned IPv4 before requesting elevation.
+pub fn room_interface_alias(ip: std::net::Ipv4Addr) -> Result<String, String> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        let script = format!(r#"
+$ErrorActionPreference = 'Stop'
+[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+$adapters = @(Get-NetIPAddress -AddressFamily IPv4 -IPAddress '{ip}' |
+    ForEach-Object {{ Get-NetAdapter -InterfaceIndex $_.InterfaceIndex }} |
+    Where-Object {{ $_.Status -eq 'Up' -and -not $_.HardwareInterface -and
+        ($_.InterfaceDescription -match 'EasyTier|Wintun' -or $_.Name -match 'EasyTier') }})
+if ($adapters.Count -ne 1) {{ throw 'Cannot identify a unique EasyTier adapter' }}
+$adapters[0].Name
+"#);
+        let output = std::process::Command::new("powershell")
+            .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+            .creation_flags(0x0800_0000)
+            .output().map_err(|e| e.to_string())?;
+        if output.status.success() {
+            return String::from_utf8(output.stdout)
+                .map(|s| s.trim().to_string()).map_err(|e| e.to_string());
+        }
+    }
+    let _ = ip;
+    Err("无法从房间虚拟 IP 确认唯一的 EasyTier 网卡，请检查网卡状态。".into())
+}
+
 /// Apply Windows Firewall rules strictly scoped to the EasyTier virtual interface (Section 4):
 /// - TCP 47984, 47989, 48010 (base_port - 5, base_port, base_port + 21)
 /// - UDP 47998, 47999, 48000 (base_port + 9, +10, +11)
 /// - TCP 47990 (base_port + 1) Management Web UI: explicitly BLOCKED on non-loopback / remote!
 fn apply_scoped_firewall_rules(interface_alias: &str, base_port: u16) -> Result<(), String> {
+    if interface_alias.trim().is_empty()
+        || !interface_alias.chars().all(|c| c.is_alphanumeric() || matches!(c, ' ' | '-' | '_' | '.'))
+    {
+        return Err("无法安全限定防火墙网卡，已取消开启被控。".into());
+    }
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
@@ -223,24 +256,12 @@ fn apply_scoped_firewall_rules(interface_alias: &str, base_port: u16) -> Result<
         );
         let mgmt_port = base_port.saturating_add(1);
 
-        // Sanitize interface alias to prevent injection
-        let safe_alias: String = interface_alias
-            .chars()
-            .filter(|c| c.is_alphanumeric() || matches!(c, ' ' | '-' | '_' | '.'))
-            .collect();
-
-        let iface_clause = if safe_alias.is_empty() {
-            String::new()
-        } else {
-            format!("-InterfaceAlias '{}'", safe_alias)
-        };
-
         let script = format!(
             r#"
 $ErrorActionPreference = 'Stop'
 Remove-NetFirewallRule -Group 'EasyStream' -ErrorAction SilentlyContinue
-New-NetFirewallRule -DisplayName 'EasyStream Sunshine Stream TCP' -Group 'EasyStream' -Direction Inbound -Action Allow -Protocol TCP -LocalPort {tcp_ports} {iface_clause} | Out-Null
-New-NetFirewallRule -DisplayName 'EasyStream Sunshine Stream UDP' -Group 'EasyStream' -Direction Inbound -Action Allow -Protocol UDP -LocalPort {udp_ports} {iface_clause} | Out-Null
+New-NetFirewallRule -DisplayName 'EasyStream Sunshine Stream TCP' -Group 'EasyStream' -Direction Inbound -Action Allow -Protocol TCP -LocalPort {tcp_ports} -InterfaceAlias '{interface_alias}' | Out-Null
+New-NetFirewallRule -DisplayName 'EasyStream Sunshine Stream UDP' -Group 'EasyStream' -Direction Inbound -Action Allow -Protocol UDP -LocalPort {udp_ports} -InterfaceAlias '{interface_alias}' | Out-Null
 New-NetFirewallRule -DisplayName 'EasyStream Block Remote Management' -Group 'EasyStream' -Direction Inbound -Action Block -Protocol TCP -LocalPort {mgmt_port} -RemoteAddress Any | Out-Null
 "#
         );
