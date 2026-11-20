@@ -73,7 +73,10 @@ impl std::error::Error for CommandError {}
 #[serde(rename_all = "camelCase")]
 pub enum AddressMode {
     Dhcp,
-    Static { ipv4_cidr: String },
+    Static {
+        #[serde(rename = "ipv4Cidr", alias = "ipv4_cidr")]
+        ipv4_cidr: String,
+    },
 }
 
 impl Default for AddressMode {
@@ -633,4 +636,20 @@ pub fn save_settings_to_disk(settings: &AppSettings) -> Result<(), String> {
     let path = settings_file_path();
     let json = serde_json::to_string_pretty(settings).map_err(|e| e.to_string())?;
     std::fs::write(path, json).map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod address_mode_tests {
+    use super::AddressMode;
+    use serde_json::{from_value, json, to_value};
+
+    #[test]
+    fn static_address_uses_frontend_field_and_reads_previous_spelling() {
+        let canonical = json!({"static": {"ipv4Cidr": "10.77.1.2/24"}});
+        for input in [canonical.clone(), json!({"static": {"ipv4_cidr": "10.77.1.2/24"}})] {
+            let mode: AddressMode = from_value(input).unwrap();
+            assert_eq!(to_value(mode).unwrap(), canonical);
+        }
+        assert_eq!(to_value(AddressMode::Dhcp).unwrap(), json!("dhcp"));
+    }
 }
