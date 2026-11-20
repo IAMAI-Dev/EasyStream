@@ -98,7 +98,11 @@ pub fn read_secret(key: &str) -> Result<Option<(String, String)>, String> {
 
     let ok = unsafe { CredReadW(target_name.as_ptr(), CRED_TYPE_GENERIC, 0, &mut cred_ptr) };
     if ok == 0 {
-        return Ok(None);
+        let err = std::io::Error::last_os_error();
+        if err.raw_os_error() == Some(windows_sys::Win32::Foundation::ERROR_NOT_FOUND as i32) {
+            return Ok(None);
+        }
+        return Err(format!("CredReadW failed: {err}"));
     }
 
     let result = unsafe {

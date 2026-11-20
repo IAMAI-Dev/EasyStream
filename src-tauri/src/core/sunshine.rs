@@ -52,7 +52,6 @@ struct SunshinePendingItem {
 
 #[derive(Debug, Deserialize)]
 struct SunshineClientsResp {
-    #[serde(default)]
     named_certs: Vec<SunshineNamedCert>,
     #[serde(default)]
     status: bool,
@@ -82,7 +81,7 @@ pub struct SunshineManager {
     status: Arc<RwLock<HostStatus>>,
     base_port: Arc<Mutex<u16>>,
     started_by_easystream: Arc<Mutex<bool>>,
-    last_known_cert_fp: Arc<Mutex<Option<String>>>,
+    host_toggle: Mutex<()>,
 }
 
 impl SunshineManager {
@@ -94,7 +93,7 @@ impl SunshineManager {
             status: Arc::new(RwLock::new(initial)),
             base_port: Arc::new(Mutex::new(base_port)),
             started_by_easystream: Arc::new(Mutex::new(false)),
-            last_known_cert_fp: Arc::new(Mutex::new(None)),
+            host_toggle: Mutex::new(()),
         }
     }
 
@@ -162,20 +161,10 @@ impl SunshineManager {
             .as_deref()
             .and_then(read_sunshine_cert_fingerprint);
 
-        let mut cert_changed = false;
-        if let Some(ref fp) = cert_fp {
-            let mut last = self.last_known_cert_fp.lock().await;
-            if let Some(ref prev) = *last {
-                if prev != fp {
-                    cert_changed = true;
-                }
-            } else if let Ok(Some((_, saved_fp))) = read_secret(SUNSHINE_CERT_PIN_KEY) {
-                if &saved_fp != fp {
-                    cert_changed = true;
-                }
-            }
-            *last = Some(fp.clone());
-        }
+        let cert_changed = matches!(
+            read_secret(SUNSHINE_CERT_PIN_KEY),
+            Ok(Some((_, saved))) if cert_fp.as_ref() != Some(&saved)
+        );
 
         let conflict_message = if conflict {
             Some("检测到系统已存在非 EasyStream 管理的 Sunshine 安装。为避免覆盖您的现有配置，默认仅作为控制端运行；如需由 EasyStream 管理，请先确认接管或卸载原实例。".to_string())
@@ -197,7 +186,7 @@ impl SunshineManager {
         }
 
         let enabled = self.status.read().await.enabled;
-        if service_running && enabled && !conflict {
+        if service_running && enabled && owned && !cert_changed {
             if let Ok(client) = self.build_local_https_client(install_dir.as_deref()) {
                 if let Ok(creds) = self.get_or_init_admin_creds().await {
                     if let Ok(pairings) = self.fetch_pending_pairings_http(&client, &creds).await {
@@ -306,6 +295,7 @@ impl SunshineManager {
         enable: bool,
         easytier_iface: &str,
     ) -> Result<HostStatus, CommandError> {
+        let _guard = self.host_toggle.lock().await;
         let current = self.refresh_status().await;
 
         if enable {
@@ -368,19 +358,27 @@ impl SunshineManager {
                 // Wait briefly for HTTPS API readiness
                 for _ in 0..10 {
                     tokio::time::sleep(std::time::Duration::from_millis(400)).await;
-                    if query_windows_service("SunshineService") == WindowsServiceState::Running {
+                    if find_sunshine_cert_bytes(&install_dir).is_some()
+                        && tokio::net::TcpStream::connect((std::net::Ipv4Addr::LOCALHOST, base_port.saturating_add(1))).await.is_ok()
+                    {
                         break;
                     }
                 }
             }
 
-            // Initialize/verify unique machine admin credentials & pin cert
-            if let Some(fp) = read_sunshine_cert_fingerprint(&install_dir) {
-                let _ = save_secret(SUNSHINE_CERT_PIN_KEY, "local", &fp);
-                *self.last_known_cert_fp.lock().await = Some(fp);
+            if let Err(err) = self.ensure_sunshine_credentials_initialized(&install_dir).await {
+                if !current.service_running {
+                    if let Ok(resp) = invoke_privileged_operation(HelperOperation::StopOwnedSunshineService).await {
+                        if resp.ok {
+                            *self.started_by_easystream.lock().await = false;
+                        }
+                    }
+                }
+                let mut status = self.status.write().await;
+                status.enabled = false;
+                status.last_error = Some(err.clone());
+                return Err(err);
             }
-            self.ensure_sunshine_credentials_initialized(&install_dir)
-                .await?;
 
             self.status.write().await.enabled = true;
             self.status.write().await.last_error = None;
@@ -549,7 +547,8 @@ impl SunshineManager {
     }
 
     async fn get_or_init_admin_creds(&self) -> Result<(String, String), CommandError> {
-        if let Ok(Some((user, pass))) = read_secret(SUNSHINE_ADMIN_CRED_KEY) {
+        if let Some((user, pass)) = read_secret(SUNSHINE_ADMIN_CRED_KEY)
+            .map_err(|e| CommandError::new(ErrorCode::InternalError, e))? {
             if !user.is_empty() && !pass.is_empty() {
                 return Ok((user, pass));
             }
@@ -565,61 +564,70 @@ impl SunshineManager {
         &self,
         install_dir: &Path,
     ) -> Result<(), CommandError> {
-        let client = self
-            .build_local_https_client(Some(install_dir))
+        let pem = find_sunshine_cert_bytes(install_dir)
+            .ok_or_else(|| CommandError::new(ErrorCode::HostIdentityMismatch, "未找到受管 Sunshine 的本机证书。"))?;
+        let fingerprint = hex::encode(Sha256::digest(&pem));
+        let saved = read_secret(SUNSHINE_CERT_PIN_KEY)
             .map_err(|e| CommandError::new(ErrorCode::InternalError, e))?;
-        let creds = self.get_or_init_admin_creds().await?;
-        let mgmt_port = *self.base_port.lock().await + 1;
-
-        // Probe /api/clients/list; if 401/uninitialized, attempt first-time /api/password initialization
-        let check_url = format!("https://127.0.0.1:{mgmt_port}/api/clients/list");
-        if let Ok(resp) = client
-            .get(&check_url)
-            .basic_auth(&creds.0, Some(&creds.1))
-            .send()
-            .await
-        {
-            if resp.status().is_success() {
-                return Ok(());
+        if let Some((_, expected)) = &saved {
+            if expected != &fingerprint {
+                return Err(CommandError::new(ErrorCode::HostIdentityMismatch, "Sunshine 证书已变更，请核实受管实例。"));
             }
         }
-
-        let pw_url = format!("https://127.0.0.1:{mgmt_port}/api/password");
-        let _ = client
-            .post(&pw_url)
-            .json(&serde_json::json!({
-                "currentUsername": "",
-                "currentPassword": "",
-                "newUsername": creds.0,
-                "newPassword": creds.1,
-                "confirmNewPassword": creds.1,
-            }))
-            .send()
-            .await;
-
+        let client = Self::pinned_client(&pem)
+            .map_err(|e| CommandError::new(ErrorCode::HostIdentityMismatch, e))?;
+        let creds = self.get_or_init_admin_creds().await?;
+        let mgmt_port = self.base_port.lock().await.saturating_add(1);
+        let check_url = format!("https://127.0.0.1:{mgmt_port}/api/clients/list");
+        let check = client.get(&check_url).basic_auth(&creds.0, Some(&creds.1))
+            .send().await.map_err(|e| CommandError::new(ErrorCode::Unauthorized, e.to_string()))?;
+        if check.status().is_success() {
+            check.json::<SunshineClientsResp>().await
+                .map_err(|e| CommandError::new(ErrorCode::Unauthorized, e.to_string()))?;
+        } else {
+            let first_setup = check.status() == reqwest::StatusCode::TEMPORARY_REDIRECT
+                && check.headers().get(reqwest::header::LOCATION)
+                    .and_then(|v| v.to_str().ok()) == Some("/welcome");
+            if !first_setup {
+                return Err(CommandError::new(ErrorCode::Unauthorized, format!("Sunshine 管理接口返回 {}", check.status())));
+            }
+            let pw_url = format!("https://127.0.0.1:{mgmt_port}/api/password");
+            let resp = client.post(pw_url)
+                .json(&serde_json::json!({
+                    "currentUsername": "", "currentPassword": "",
+                    "newUsername": creds.0, "newPassword": creds.1, "confirmNewPassword": creds.1,
+                }))
+                .send().await.and_then(|r| r.error_for_status())
+                .map_err(|e| CommandError::new(ErrorCode::Unauthorized, e.to_string()))?;
+            let result: SunshineStatusResp = resp.json().await
+                .map_err(|e| CommandError::new(ErrorCode::Unauthorized, e.to_string()))?;
+            if !result.status {
+                return Err(CommandError::new(ErrorCode::Unauthorized, "Sunshine 拒绝初始化管理凭据。"));
+            }
+            self.fetch_clients_http(&client, &creds).await?;
+        }
+        if saved.is_none() {
+            save_secret(SUNSHINE_CERT_PIN_KEY, "local", &fingerprint)
+                .map_err(|e| CommandError::new(ErrorCode::InternalError, e))?;
+        }
         Ok(())
     }
 
     fn build_local_https_client(&self, install_dir: Option<&Path>) -> Result<Client, String> {
-        let mut builder = Client::builder()
-            .timeout(std::time::Duration::from_secs(6))
-            .no_proxy();
-
-        // Pin Sunshine's local self-signed certificate if readable; always restrict to 127.0.0.1.
-        if let Some(dir) = install_dir {
-            if let Some(pem_bytes) = find_sunshine_cert_bytes(dir) {
-                if let Ok(cert) = reqwest::Certificate::from_pem(&pem_bytes) {
-                    builder = builder.add_root_certificate(cert);
-                }
-            }
+        let pem = install_dir.and_then(find_sunshine_cert_bytes).ok_or("Sunshine 本机证书不可用")?;
+        let (_, expected) = read_secret(SUNSHINE_CERT_PIN_KEY)?.ok_or("Sunshine 证书尚未绑定")?;
+        if hex::encode(Sha256::digest(&pem)) != expected {
+            return Err("Sunshine 证书与已保存的指纹不符".into());
         }
+        Self::pinned_client(&pem)
+    }
 
-        // Loopback self-signed certs on Sunshine often lack SAN=127.0.0.1, so we allow invalid
-        // hostname/chain on 127.0.0.1 only while verifying cert fingerprint in refresh_status.
-        builder
-            .danger_accept_invalid_certs(true)
-            .build()
-            .map_err(|e| format!("Failed to build HTTPS client: {e}"))
+    fn pinned_client(pem: &[u8]) -> Result<Client, String> {
+        Client::builder().use_preconfigured_tls(super::sunshine_tls::pinned_config(pem)?)
+            .https_only(true)
+            .redirect(reqwest::redirect::Policy::none())
+            .timeout(std::time::Duration::from_secs(6))
+            .no_proxy().build().map_err(|e| e.to_string())
     }
 
     async fn fetch_pending_pairings_http(
