@@ -21,7 +21,6 @@ const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 pub struct HostProbeResult {
     pub reachable: bool,
     pub unique_id: Option<String>,
-    pub paired: bool,
     pub busy: bool,
     pub hostname: Option<String>,
 }
@@ -47,7 +46,7 @@ impl MoonlightManager {
     }
 
     /// Probe target host via standard GameStream HTTP /serverinfo (base port 47989).
-    /// Returns reachability, host uniqueid (for identity verification), PairStatus, and busy state.
+    /// Returns reachability, host uniqueid (for identity verification), and busy state.
     pub async fn probe_host_serverinfo(
         &self,
         host_ip: &str,
@@ -64,7 +63,6 @@ impl MoonlightManager {
                 return HostProbeResult {
                     reachable: false,
                     unique_id: None,
-                    paired: false,
                     busy: false,
                     hostname: None,
                 }
@@ -77,7 +75,6 @@ impl MoonlightManager {
                 return HostProbeResult {
                     reachable: false,
                     unique_id: None,
-                    paired: false,
                     busy: false,
                     hostname: None,
                 }
@@ -86,9 +83,6 @@ impl MoonlightManager {
 
         let body = resp.text().await.unwrap_or_default();
         let unique_id = extract_xml_tag(&body, "uniqueid");
-        let pair_status = extract_xml_tag(&body, "PairStatus")
-            .map(|s| s == "1")
-            .unwrap_or(false);
         let current_game = extract_xml_tag(&body, "currentgame")
             .and_then(|s| s.parse::<u64>().ok())
             .unwrap_or(0);
@@ -98,9 +92,8 @@ impl MoonlightManager {
         let busy = current_game != 0 || state.contains("SUNSHINE_SERVER_BUSY");
 
         HostProbeResult {
-            reachable: true,
+            reachable: unique_id.is_some() && !state.is_empty(),
             unique_id,
-            paired: pair_status,
             busy,
             hostname,
         }
@@ -143,33 +136,28 @@ impl MoonlightManager {
         let work_dir = bin.parent().map(PathBuf::from);
         let ip = host_ip.to_string();
 
-        let output = tokio::task::spawn_blocking(move || {
-            let mut cmd = Command::new(&bin);
-            cmd.args(["list", &ip, "--csv"]);
-            if let Some(dir) = work_dir {
-                cmd.current_dir(dir);
-            }
-            #[cfg(windows)]
-            cmd.creation_flags(CREATE_NO_WINDOW);
-            cmd.output()
-        })
-        .await
-        .map_err(|e| CommandError::new(ErrorCode::InternalError, e.to_string()))?
-        .map_err(|e| {
-            CommandError::new(
-                ErrorCode::InternalError,
-                format!("执行 Moonlight list 失败: {e}"),
-            )
-        })?;
+        let mut cmd = tokio::process::Command::new(&bin);
+        cmd.args(["list", &ip, "--csv"]).kill_on_drop(true);
+        if let Some(dir) = work_dir {
+            cmd.current_dir(dir);
+        }
+        #[cfg(windows)]
+        cmd.creation_flags(CREATE_NO_WINDOW);
+        let output = tokio::time::timeout(std::time::Duration::from_secs(8), cmd.output())
+            .await
+            .map_err(|_| CommandError::new(ErrorCode::NoReachablePath, "Moonlight 查询应用列表超时。"))?
+            .map_err(|e| CommandError::new(ErrorCode::InternalError, format!("执行 Moonlight list 失败: {e}")))?;
 
         let stdout = String::from_utf8_lossy(&output.stdout);
         let stderr = String::from_utf8_lossy(&output.stderr);
 
         if !output.status.success() {
-            let combined = format!("{stdout}\n{stderr}");
-            if combined.to_lowercase().contains("pair")
-                || combined.to_lowercase().contains("certificate")
-            {
+            // In the pinned CLI, -1 also means a host lookup timeout. Its connect
+            // failure is untranslated, while the unpaired message is localized.
+            let unpaired = matches!(output.status.code(), Some(-1 | 255))
+                && !stderr.trim().is_empty()
+                && !stderr.lines().any(|line| line.starts_with("Failed to connect to "));
+            if unpaired {
                 return Err(CommandError::new(
                     ErrorCode::Unauthorized,
                     "设备尚未完成配对或主机配对凭证已失效，请重新配对。",
@@ -181,14 +169,7 @@ impl MoonlightManager {
             ));
         }
 
-        let apps = parse_moonlight_csv_apps(&stdout);
-        if apps.is_empty() {
-            return Err(CommandError::new(
-                ErrorCode::AppMissing,
-                "主机未发布任何可串流应用（至少需要 Desktop）。",
-            ));
-        }
-        Ok(apps)
+        Ok(parse_moonlight_csv_apps(&stdout))
     }
 
     /// Launch `Moonlight.exe stream <host_ip> <app> --resolution WxH --fps F --bitrate K --display-mode M --video-codec C`
@@ -276,7 +257,7 @@ pub fn parse_moonlight_csv_apps(stdout: &str) -> Vec<String> {
             continue;
         }
         // Skip header if present
-        if trimmed.eq_ignore_ascii_case("Name,ID") || trimmed.eq_ignore_ascii_case("\"Name\",\"ID\"") {
+        if trimmed.starts_with("Name, ID,") || trimmed.eq_ignore_ascii_case("Name,ID") || trimmed.eq_ignore_ascii_case("\"Name\",\"ID\"") {
             continue;
         }
         let name = if let Some(rest) = trimmed.strip_prefix('"') {
@@ -306,7 +287,7 @@ mod tests {
 
     #[test]
     fn parses_csv_app_list() {
-        let sample = "\"Desktop\",1001\n\"Steam Big Picture\",1002\n";
+        let sample = "Name, ID, HDR Support, App Collection Game, Hidden, Direct Launch, Boxart URL\n\"Desktop\",1001\n\"Steam Big Picture\",1002\n";
         let apps = parse_moonlight_csv_apps(sample);
         assert_eq!(apps, vec!["Desktop", "Steam Big Picture"]);
     }

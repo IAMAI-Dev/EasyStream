@@ -350,7 +350,12 @@ async fn run_connect_workflow(
 
     // Step 1-3: If not paired yet, generate 4-digit PIN and run Moonlight.exe pair
     let mut pairing_wait_ms: Option<u64> = None;
-    if !probe.paired {
+    let initial_apps = state.moonlight.list_apps(&peer_ip).await;
+    if !state.session.is_current(&op_id).await {
+        return;
+    }
+    let needs_pairing = matches!(&initial_apps, Err(err) if err.code == ErrorCode::Unauthorized);
+    if needs_pairing {
         let pin = MoonlightManager::generate_pairing_pin();
         state.session.set_pairing_waiting(&op_id, &pin).await;
         emit_session(&app, &state).await;
@@ -409,7 +414,18 @@ async fn run_connect_workflow(
         .await;
     emit_session(&app, &state).await;
 
-    let apps = match state.moonlight.list_apps(&peer_ip).await {
+    let app_result = if needs_pairing {
+        state.moonlight.list_apps(&peer_ip).await
+    } else {
+        initial_apps
+    };
+    let apps = match app_result {
+        Ok(apps) if apps.is_empty() => {
+            let err = CommandError::new(ErrorCode::AppMissing, "主机未发布任何可串流应用。");
+            state.session.set_failed(&op_id, err).await;
+            emit_session(&app, &state).await;
+            return;
+        }
         Ok(a) => a,
         Err(err) => {
             state.session.set_failed(&op_id, err).await;

@@ -447,7 +447,7 @@ impl EasyTierManager {
         peer_id: &str,
         host_reachable: bool,
         stream_available: bool,
-        paired: bool,
+        paired: Option<bool>,
         busy: bool,
         host_unique_id: Option<String>,
         identity_changed: bool,
@@ -457,27 +457,23 @@ impl EasyTierManager {
         if let Some(p) = peers.iter_mut().find(|p| p.peer_id == peer_id) {
             p.host_reachable = host_reachable;
             p.stream_available = stream_available;
-            p.paired = paired;
+            p.paired = paired == Some(true);
             p.host_unique_id = host_unique_id;
-            if !available_apps.is_empty() {
-                p.available_apps = available_apps;
-                if p.selected_app.is_none() {
-                    p.selected_app = p
-                        .available_apps
-                        .iter()
-                        .find(|a| a.eq_ignore_ascii_case("Desktop"))
-                        .cloned()
-                        .or_else(|| p.available_apps.first().cloned());
-                }
+            p.available_apps = available_apps;
+            if !p.selected_app.as_ref().is_some_and(|app| p.available_apps.contains(app)) {
+                p.selected_app = p.available_apps.iter().find(|a| a.eq_ignore_ascii_case("Desktop"))
+                    .or_else(|| p.available_apps.first()).cloned();
             }
             p.readiness = if identity_changed {
                 HostReadiness::IdentityChanged
             } else if busy {
                 HostReadiness::HostBusy
-            } else if paired && stream_available {
+            } else if stream_available {
                 HostReadiness::StreamReady
-            } else if host_reachable {
+            } else if paired == Some(false) {
                 HostReadiness::NeedsPairing
+            } else if host_reachable {
+                HostReadiness::InRoom
             } else {
                 HostReadiness::HostUnreachable
             };

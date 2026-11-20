@@ -140,6 +140,7 @@ async fn perform_clean_exit(app: &AppHandle, state: &Arc<AppState>) {
 fn start_background_monitor(app: AppHandle, state: Arc<AppState>) {
     tauri::async_runtime::spawn(async move {
         let mut ticker = tokio::time::interval(std::time::Duration::from_secs(2));
+        let mut next_app_refresh = std::time::Instant::now();
         loop {
             ticker.tick().await;
 
@@ -165,6 +166,10 @@ fn start_background_monitor(app: AppHandle, state: Arc<AppState>) {
                         (s.sunshine_base_port, s.trusted_host_identities.clone())
                     };
 
+                    let refresh_apps = std::time::Instant::now() >= next_app_refresh;
+                    if refresh_apps {
+                        next_app_refresh = std::time::Instant::now() + std::time::Duration::from_secs(30);
+                    }
                     for peer in &peers {
                         let probe = state
                             .moonlight
@@ -175,15 +180,19 @@ fn start_background_monitor(app: AppHandle, state: Arc<AppState>) {
                             (Some(actual), Some(expected)) => actual != expected,
                             _ => false,
                         };
-                        let apps = if probe.reachable && probe.paired && peer.available_apps.is_empty()
-                        {
-                            state
-                                .moonlight
-                                .list_apps(&peer.virtual_ip)
-                                .await
-                                .unwrap_or_default()
+                        let (paired, apps) = if !probe.reachable || identity_changed {
+                            (None, Vec::new())
+                        } else if !probe.busy && (refresh_apps || peer.host_unique_id != probe.unique_id) {
+                            match state.moonlight.list_apps(&peer.virtual_ip).await {
+                                Ok(apps) => (Some(true), apps),
+                                Err(e) if e.code == crate::state::ErrorCode::Unauthorized => (Some(false), Vec::new()),
+                                Err(_) => (None, Vec::new()),
+                            }
                         } else {
-                            peer.available_apps.clone()
+                            let known = if peer.paired { Some(true) }
+                                else if peer.readiness == crate::state::HostReadiness::NeedsPairing { Some(false) }
+                                else { None };
+                            (known, peer.available_apps.clone())
                         };
 
                         state
@@ -191,8 +200,8 @@ fn start_background_monitor(app: AppHandle, state: Arc<AppState>) {
                             .update_peer_probe(
                                 &peer.peer_id,
                                 probe.reachable,
-                                probe.reachable && probe.paired && !probe.busy,
-                                probe.paired,
+                                paired == Some(true) && !apps.is_empty() && !probe.busy,
+                                paired,
                                 probe.busy,
                                 probe.unique_id,
                                 identity_changed,
