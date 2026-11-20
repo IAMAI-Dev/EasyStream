@@ -125,6 +125,9 @@ impl SunshineManager {
         {
             return Some(p);
         }
+        if !cfg!(debug_assertions) {
+            return None;
+        }
         // Scan resources/sunshine/*.msi
         if let Ok(cwd) = std::env::current_dir() {
             for base in [
@@ -229,7 +232,7 @@ impl SunshineManager {
     }
 
     /// Install the staged Sunshine x64 MSI on-demand and record EasyStream ownership marker.
-    pub async fn install_sunshine_msi(&self) -> Result<HostStatus, CommandError> {
+    async fn install_sunshine_msi(&self) -> Result<HostStatus, CommandError> {
         if self.find_sunshine_install_dir().is_some() {
             return Ok(self.refresh_status().await);
         }
@@ -245,8 +248,19 @@ impl SunshineManager {
         {
             let msi_str = msi_path.to_string_lossy().to_string();
             let output = tokio::task::spawn_blocking(move || {
+                let manifest: serde_json::Value =
+                    serde_json::from_str(include_str!("../../resources/manifest.json"))
+                        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+                let expected = manifest["components"]["sunshine"]["sha256"].as_str();
+                let digest = hex::encode(Sha256::digest(std::fs::read(&msi_path)?));
+                if expected != Some(digest.as_str()) {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "Sunshine MSI 校验失败，请重新安装 EasyStream。",
+                    ));
+                }
                 std::process::Command::new("msiexec")
-                    .args(["/i", &msi_str, "/qn", "/norestart"])
+                    .args(["/i", &msi_str, "/qn", "/norestart", "REMOVE=CM_C_firewall"])
                     .creation_flags(CREATE_NO_WINDOW)
                     .output()
             })
@@ -256,8 +270,8 @@ impl SunshineManager {
                 CommandError::new(ErrorCode::PermissionRequired, format!("启动 msiexec 失败: {e}"))
             })?;
 
-            if !output.status.success() {
-                let code = output.status.code().unwrap_or(-1);
+            let code = output.status.code().unwrap_or(-1);
+            if !matches!(code, 0 | 3010) {
                 return Err(CommandError::new(
                     ErrorCode::PermissionRequired,
                     format!("Sunshine MSI 安装失败（退出码 {code}），静默安装通常需要管理员权限。"),
@@ -267,7 +281,7 @@ impl SunshineManager {
 
         let install_dir = self
             .find_sunshine_install_dir()
-            .unwrap_or_else(|| PathBuf::from(r"C:\Program Files\Sunshine"));
+            .ok_or_else(|| CommandError::new(ErrorCode::ComponentMissing, "Sunshine MSI 已退出，但未找到安装后的程序。"))?;
         self.write_ownership_marker(&install_dir, "v2026.914.233613")
             .map_err(|e| CommandError::new(ErrorCode::InternalError, e))?;
 
@@ -296,15 +310,9 @@ impl SunshineManager {
         easytier_iface: &str,
     ) -> Result<HostStatus, CommandError> {
         let _guard = self.host_toggle.lock().await;
-        let current = self.refresh_status().await;
+        let mut current = self.refresh_status().await;
 
         if enable {
-            if !current.sunshine_installed {
-                return Err(CommandError::new(
-                    ErrorCode::ComponentMissing,
-                    "尚未安装 Sunshine 被控端组件，请先点击“安装 Sunshine 组件”。",
-                ));
-            }
             if current.sunshine_conflict_detected {
                 return Err(CommandError::new(
                     ErrorCode::SunshineConflict,
@@ -319,6 +327,43 @@ impl SunshineManager {
                     ErrorCode::EncodeOrCaptureFailed,
                     "未检测到可捕获的活动显示输出（物理屏或已启用虚拟屏），无法开启被控。",
                 ));
+            }
+
+            if !current.sunshine_installed {
+                current = self.install_sunshine_msi().await?;
+                if !current.sunshine_owned_by_easystream {
+                    return Err(CommandError::new(ErrorCode::SunshineConflict, "无法确认新安装的 Sunshine 由 EasyStream 管理。"));
+                }
+            }
+
+            // The upstream MSI registers an auto-starting service. Apply our
+            // configuration before starting it, and keep it off across reboot.
+            #[cfg(windows)]
+            if !current.enabled {
+                let output = std::process::Command::new("sc.exe")
+                    .args(["config", "SunshineService", "start=", "demand"])
+                    .creation_flags(CREATE_NO_WINDOW)
+                    .output()
+                    .map_err(|e| CommandError::new(ErrorCode::PermissionRequired, e.to_string()))?;
+                if !output.status.success() {
+                    return Err(CommandError::new(
+                        ErrorCode::PermissionRequired,
+                        "无法将受管 Sunshine 服务设置为按需启动。",
+                    ));
+                }
+                crate::core::process_mgr::stop_windows_service("SunshineService")
+                    .map_err(|e| CommandError::new(ErrorCode::PermissionRequired, e))?;
+                for _ in 0..20 {
+                    if query_windows_service("SunshineService") == WindowsServiceState::Stopped {
+                        break;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                }
+                current.service_running =
+                    query_windows_service("SunshineService") != WindowsServiceState::Stopped;
+                if current.service_running {
+                    return Err(CommandError::new(ErrorCode::HostBusy, "请等待 Sunshine 服务结束后重试。"));
+                }
             }
 
             let install_dir = self.find_sunshine_install_dir().ok_or_else(|| {

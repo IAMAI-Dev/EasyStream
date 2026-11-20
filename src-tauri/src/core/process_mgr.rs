@@ -254,6 +254,12 @@ impl ProcessManager {
     /// 3. Executable sibling `binaries/<name>` / target-triple sidecar
     /// 4. `%LOCALAPPDATA%\EasyStream\components\<subdir>\<name>`
     pub fn resolve_component_binary(&self, subdir: &str, filename: &str) -> Option<PathBuf> {
+        if !cfg!(debug_assertions) {
+            let exe = std::env::current_exe().ok()?;
+            let path = exe.parent()?.join("resources").join(subdir).join(filename);
+            return path.is_file().then_some(path);
+        }
+
         let mut candidates: Vec<PathBuf> = Vec::new();
 
         if let Ok(exe) = std::env::current_exe() {

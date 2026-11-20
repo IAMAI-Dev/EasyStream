@@ -160,13 +160,6 @@ export function App() {
     });
   };
 
-  const handleInstallSunshine = async () => {
-    await runAction(async () => {
-      const updated = await api.installSunshine();
-      setSnapshot((prev) => (prev ? { ...prev, host: updated } : prev));
-    });
-  };
-
   const handleDecidePairing = async (req: DecidePairingRequest) => {
     await runAction(async () => {
       await api.decidePairing(req);
@@ -342,7 +335,6 @@ export function App() {
             <HostPanel
               host={host}
               onToggleHost={handleToggleHost}
-              onInstallSunshine={handleInstallSunshine}
               onDecidePairing={handleDecidePairing}
               busy={busy}
             />

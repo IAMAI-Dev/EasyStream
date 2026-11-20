@@ -15,7 +15,7 @@ use tauri::{
 
 use crate::commands::{
     connect_to_peer, decide_pairing, disconnect, export_diagnostics, generate_room_credentials,
-    get_logs, get_snapshot, install_sunshine, join_network, leave_network, list_trusted_clients,
+    get_logs, get_snapshot, join_network, leave_network, list_trusted_clients,
     load_saved_room, revoke_client, toggle_host_service, update_settings,
 };
 use crate::state::{AppState, PeersUpdatedEvent, RoomStage, SessionStage};
@@ -35,7 +35,6 @@ pub fn run() {
             load_saved_room,
             join_network,
             leave_network,
-            install_sunshine,
             toggle_host_service,
             decide_pairing,
             list_trusted_clients,

@@ -8,6 +8,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
+    "build:windows": "tauri build -- --locked",
     "preview": "vite preview",
     "tauri": "tauri",
     "typecheck": "tsc --noEmit"

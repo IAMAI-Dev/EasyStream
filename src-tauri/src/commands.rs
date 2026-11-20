@@ -122,17 +122,6 @@ pub async fn leave_network(
 }
 
 #[tauri::command]
-pub async fn install_sunshine(
-    app: AppHandle,
-    state: State<'_, Arc<AppState>>,
-) -> Result<HostStatus, CommandError> {
-    state.append_log("开始按需安装 Sunshine x64 MSI...".to_string()).await;
-    let status = state.sunshine.install_sunshine_msi().await?;
-    let _ = app.emit("host-status-updated", &status);
-    Ok(status)
-}
-
-#[tauri::command]
 pub async fn toggle_host_service(
     app: AppHandle,
     state: State<'_, Arc<AppState>>,

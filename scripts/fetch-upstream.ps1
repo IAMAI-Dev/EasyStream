@@ -62,14 +62,19 @@ try {
     if ($mlExe.Count -ne 1) { throw "Expected one Moonlight.exe in portable archive" }
     $etCore = Get-ChildItem -Path $etExtract -Recurse -Filter "easytier-core.exe" | Select-Object -First 1
     $etCli = Get-ChildItem -Path $etExtract -Recurse -Filter "easytier-cli.exe" | Select-Object -First 1
-    $wintun = Get-ChildItem -Path $etExtract -Recurse -Filter "wintun.dll" | Select-Object -First 1
     if (-not $etCore -or -not $etCli) {
         throw "easytier-core.exe or easytier-cli.exe missing from archive."
     }
-    Copy-Item -Force $etCore.FullName (Join-Path $ResourcesRoot "easytier\easytier-core.exe")
-    Copy-Item -Force $etCli.FullName (Join-Path $ResourcesRoot "easytier\easytier-cli.exe")
-    if ($wintun) {
-        Copy-Item -Force $wintun.FullName (Join-Path $ResourcesRoot "easytier\wintun.dll")
+    $etRuntime = @($etCore, $etCli)
+    foreach ($name in 'wintun.dll', 'Packet.dll', 'WinDivert64.sys') {
+        $path = Join-Path $etCore.DirectoryName $name
+        if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+            throw "EasyTier release is missing $name."
+        }
+        $etRuntime += Get-Item -LiteralPath $path
+    }
+    foreach ($item in $etRuntime) {
+        Copy-Item -LiteralPath $item.FullName -Destination (Join-Path $ResourcesRoot 'easytier') -Force
     }
     Copy-Item -LiteralPath $ssMsi -Destination (Join-Path $ResourcesRoot 'sunshine\sunshine-windows-installer.msi') -Force
     $mlTarget = (Get-Item -LiteralPath (Join-Path $ResourcesRoot 'moonlight')).FullName

@@ -30,6 +30,12 @@
 
 ## 开发环境构建
 
+### Windows 安装包
+
+两台电脑使用同一个 Windows x64 安装包。安装时会准备 WebView2 及两端所需的 EasyTier、Wintun 和 Moonlight。加入房间后，只有第一次点击“允许远程控制”的电脑会从包内安装 Sunshine。安装版启动时会显示 Windows 管理员权限确认。最终用户只需下载 EasyStream 安装包。
+
+开发机装好下方工具后，运行 `pnpm install --frozen-lockfile`、`pnpm build:windows`。构建自动下载并校验固定版本的上游资源，生成 `src-tauri/target/release/bundle/nsis/` 下的安装包。也可以通过 GitHub Actions 的 **Windows x64 installer** 工作流构建。
+
 ### 前置依赖
 - Node.js 20+ & `pnpm`
 - Rust stable toolchain (`rustc` / `cargo`)
@@ -57,8 +63,8 @@ pnpm build
 # 启动 Tauri 开发模式
 pnpm tauri dev
 
-# 构建 Windows MSI / NSIS 安装包
-pnpm tauri build
+# 构建 Windows x64 NSIS 安装包
+pnpm build:windows
 ```
 
 ---

@@ -6,7 +6,7 @@
   "build": {
     "beforeDevCommand": "pnpm dev",
     "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "pnpm build",
+    "beforeBuildCommand": "powershell.exe -NoProfile -ExecutionPolicy RemoteSigned -File ./scripts/prepare-windows-bundle.ps1",
     "frontendDist": "../dist"
   },
   "app": {
@@ -29,7 +29,7 @@
   },
   "bundle": {
     "active": true,
-    "targets": ["msi", "nsis"],
+    "targets": ["nsis"],
     "license": "GPL-3.0-or-later",
     "licenseFile": "../LICENSE",
     "icon": [
@@ -42,8 +42,13 @@
       "resources/**/*"
     ],
     "windows": {
-      "wix": {
-        "language": "zh-CN"
+      "webviewInstallMode": {
+        "type": "offlineInstaller",
+        "silent": true
+      },
+      "nsis": {
+        "installMode": "perMachine",
+        "languages": ["SimpChinese", "English"]
       }
     }
   }

@@ -2,7 +2,6 @@ import React, { useState } from "react";
 import {
   AlertCircle,
   CheckCircle2,
-  Download,
   KeyRound,
   Monitor,
   Power,
@@ -14,7 +13,6 @@ import type { DecidePairingRequest, HostStatus } from "../types";
 interface HostPanelProps {
   host: HostStatus;
   onToggleHost: (enable: boolean) => Promise<void>;
-  onInstallSunshine: () => Promise<void>;
   onDecidePairing: (req: DecidePairingRequest) => Promise<void>;
   busy: boolean;
 }
@@ -22,7 +20,6 @@ interface HostPanelProps {
 export const HostPanel: React.FC<HostPanelProps> = ({
   host,
   onToggleHost,
-  onInstallSunshine,
   onDecidePairing,
   busy,
 }) => {
@@ -54,37 +51,23 @@ export const HostPanel: React.FC<HostPanelProps> = ({
                 允许远程控制本机（被控端）
               </h2>
               <p className="text-xs text-slate-400 mt-0.5">
-                默认关闭。开启后将启动受管 Sunshine 服务、配置回环管理凭据并仅向 EasyTier 虚拟网卡放行媒体端口
+                加入房间后即可开启。首次开启会自动从安装包安装 Sunshine。
               </p>
             </div>
           </div>
 
           <div className="flex items-center gap-2.5">
-            {!host.sunshineInstalled ? (
-              <button
-                type="button"
-                disabled={busy}
-                onClick={onInstallSunshine}
-                className="px-4 py-2 rounded-lg bg-sky-600 hover:bg-sky-500 text-white text-sm font-medium inline-flex items-center gap-2 transition-colors disabled:opacity-50"
-              >
-                <Download className="w-4 h-4" />
-                安装 Sunshine 组件
-              </button>
-            ) : (
-              <button
-                type="button"
-                disabled={busy || host.sunshineConflictDetected}
-                onClick={() => onToggleHost(!host.enabled)}
-                className={`px-4 py-2 rounded-lg text-sm font-medium inline-flex items-center gap-2 transition-colors disabled:opacity-40 ${
-                  host.enabled
-                    ? "bg-rose-600 hover:bg-rose-500 text-white"
-                    : "bg-emerald-600 hover:bg-emerald-500 text-white"
-                }`}
-              >
-                <Power className="w-4 h-4" />
-                {host.enabled ? "立即停止被控" : "允许远程控制"}
-              </button>
-            )}
+            <button
+              type="button"
+              disabled={busy || host.sunshineConflictDetected}
+              onClick={() => onToggleHost(!host.enabled)}
+              className={`px-4 py-2 rounded-lg text-white text-sm font-medium inline-flex items-center gap-2 transition-colors disabled:opacity-40 ${
+                host.enabled ? "bg-rose-600 hover:bg-rose-500" : "bg-emerald-600 hover:bg-emerald-500"
+              }`}
+            >
+              <Power className="w-4 h-4" />
+              {host.enabled ? "立即停止被控" : "允许远程控制"}
+            </button>
           </div>
         </div>
 

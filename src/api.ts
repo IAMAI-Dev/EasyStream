@@ -25,7 +25,6 @@ export const api = {
   joinNetwork: (request: JoinNetworkRequest) =>
     invoke<RoomSnapshot>("join_network", { request }),
   leaveNetwork: () => invoke<void>("leave_network"),
-  installSunshine: () => invoke<HostStatus>("install_sunshine"),
   toggleHostService: (enable: boolean) =>
     invoke<HostStatus>("toggle_host_service", { enable }),
   decidePairing: (request: DecidePairingRequest) =>
